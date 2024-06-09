@@ -5,6 +5,9 @@ import argparse
 import os
 import pickle
 
+import torch, numpy as np
+from torch import nn
+
 import tianshou as ts
 import gymnasium as gym
 import numpy as np
@@ -39,8 +42,8 @@ env_config = {
     },
     "policy_frequency": 2,  # [Hz] # frequency with which actions are chosen (the agent acts)
     "action": {
+        "type": "DiscreteMetaAction",
         # "type": "DiscreteAction", # thankfully that works, discretizes 3x3 = 9 combinations of steering and speed controls, use that since it fits with the algorithms and q value structure
-        "type": "DiscreteMetaAction"
         # "longitudinal": True,
         # "lateral": True,
         # "actions_per_axis": 5 # change that for discretization accuracy
@@ -77,6 +80,11 @@ max_return = 100
 batch_size = 64
 training_num = 8
 
+eps_train = 0.25 #default: 0.1
+eps_test = 0 #default: 0.05
+eps_step_init = 10000
+eps_step_final = 50000
+
 reward_threshold = None
 
 if __name__ == "__main__":
@@ -87,11 +95,48 @@ if __name__ == "__main__":
     print(env.observation_space, env.action_space)
     print(env.observation_space.shape, env.action_space.shape or env.action_space.n)
 
-    net = Net(
-        state_shape = env.observation_space.shape,
-        action_shape = env.action_space.shape or env.action_space.n,
-        hidden_sizes=[128, 128, 128, 128],
-        softmax=True,
+    class CNNnet(nn.Module):
+        def __init__(self, obs_space: gym.Space, action_shape, num_atoms):
+            super().__init__()
+            self.num_atoms = num_atoms
+            self.cnn = nn.Sequential(
+                nn.Conv2d(obs_space.shape[0], 32, kernel_size=8, stride=4, padding=0,),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+            # Compute shape by doing one forward pass
+            with torch.no_grad():
+                n_flatten = self.cnn(torch.as_tensor(obs_space.sample()[None]).float()).shape[1]
+            
+            self.linear = nn.Sequential(
+                nn.Linear(n_flatten, 256),
+                nn.ReLU(),
+                nn.Linear(256, int(np.prod(action_shape)) * num_atoms),
+            )
+
+        def forward(self, obs, state=None, info={}):
+            if not isinstance(obs, torch.Tensor):
+                obs = torch.tensor(obs, dtype=torch.float)
+            logits = self.linear(self.cnn(obs))
+            batch_size = logits.shape[0]
+            logits = logits.view(batch_size, -1, self.num_atoms)
+            logits = torch.softmax(logits, dim=-1)
+            return logits, state
+
+    # net = Net(
+    #     state_shape = env.observation_space.shape,
+    #     action_shape = env.action_space.shape or env.action_space.n,
+    #     hidden_sizes=[128, 64, 32, 16], #default: [128,128,128,128]
+    #     softmax=True,
+    #     num_atoms=51
+    # )
+    net = CNNnet(
+        obs_space=env.observation_space,
+        action_shape=env.action_space.shape or env.action_space.n,
         num_atoms=51
     )
     optim = torch.optim.Adam(net.parameters(), lr=1e-3)
@@ -104,8 +149,8 @@ if __name__ == "__main__":
         num_atoms=51,
         v_min=min_return, 
         v_max=max_return,
-        # estimation_step=3,
-        # target_update_freq=320
+        estimation_step=3,
+        target_update_freq=320
     )
 
     train_collector = Collector(policy, train_envs, VectorReplayBuffer(20000, num_train_envs), exploration_noise=True)
@@ -121,6 +166,16 @@ if __name__ == "__main__":
     writer = SummaryWriter("log/C51")
     logger = TensorboardLogger(writer)
 
+    def train_fn(epoch: int, env_step: int) -> None:
+        # eps annnealing, just a demo
+        if env_step <= eps_step_init:
+            policy.set_eps(eps_train)
+        elif env_step <= eps_step_final:
+            eps = eps_train - (env_step - 10000) / 40000 * (0.9 * eps_train)
+            policy.set_eps(eps)
+        else:
+            policy.set_eps(0.1 * eps_train)
+
     trainer = OffpolicyTrainer(
         policy=policy,
         train_collector=train_collector,
@@ -132,8 +187,8 @@ if __name__ == "__main__":
         update_per_step=0.125, #default: 0.125
         episode_per_test=50, #default: 100, preferred: 10-50
         batch_size=batch_size,
-        train_fn=lambda epoch, env_step: policy.set_eps(0.25), #default: 0.1
-        test_fn=lambda epoch, env_step: policy.set_eps(0.05),
+        train_fn=train_fn,
+        test_fn=lambda epoch, env_step: policy.set_eps(eps_test),
         # stop_fn=lambda mean_rewards: mean_rewards >= reward_threshold
         logger=logger,
     )
@@ -141,12 +196,13 @@ if __name__ == "__main__":
     for epoch_stat in trainer:
         print(epoch_stat)
         policy.eval()
-        # policy.set_eps(0.05) #default: 0.05
+        # policy.set_eps(eps_test)
         env = create_env("human")
         buf = VectorReplayBuffer(20000, num_train_envs)
         collector = ts.data.Collector(policy, env, buf, exploration_noise=True)
         collector.reset()
-        collector.collect(n_episode=10, render=1 / 200)
+        collector.collect(n_episode=10, render=1 / 200) #the policy seems to only choose actions 1-4 (or 5, that doesn't exist), so it may think it's not 0-4 but 1-5
         env.close()
-        print(np.std(buf.act))
+        print(np.min(buf.act))
+        print(np.max(buf.act))
         policy.train()
