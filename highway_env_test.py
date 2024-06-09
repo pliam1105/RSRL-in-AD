@@ -1,9 +1,11 @@
 import gymnasium as gym
 from matplotlib import pyplot as plt
 
+from highway_env.envs.highway_env import HighwayEnv
+
 if __name__ == "__main__":
-    env = gym.make("highway-v0", render_mode="human")
-    env.configure({
+    env: HighwayEnv = gym.make("highway-v0", render_mode="human")
+    config = {
         # "manual_control": True,
         # check the observation configs to align with the one the algorithms use (Atari -> RGB/Grayscale?, and check stack config if it's applied before/after input)
         "observation": {
@@ -36,7 +38,8 @@ if __name__ == "__main__":
         "render_agent": True,
         "offscreen_rendering": False,
         "offroad_terminal": True # VERY IMPORTANT TO NOT GET OUT OF TRACK (LITERALLY, PUN INTENTED)
-    })
+    }
+    env.configure(config)
     obs, info = env.reset()
     print(env.action_space)
     done = False
