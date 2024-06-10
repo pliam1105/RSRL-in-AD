@@ -23,7 +23,7 @@ from tianshou.data import (
     ReplayBuffer,
     VectorReplayBuffer,
 )
-from tianshou.env import DummyVectorEnv
+from tianshou.env import DummyVectorEnv, SubprocVectorEnv
 from tianshou.policy import C51Policy, DQNPolicy
 from tianshou.policy.base import BasePolicy, TLearningRateScheduler
 from tianshou.trainer import OffpolicyTrainer
@@ -336,9 +336,13 @@ def run_experiment(risk_measure="neutral", beta=0.0, load_policy=False, train_po
     # evaluate trained/stored policy
     policy.eval()
     # policy.set_eps(eps_test)
-    env = create_env("human")
+    env = create_env("rgb_array")
+    # env.metadata["render_fps"] = 2
+    print(env.metadata.get("render_fps"))
     buf = VectorReplayBuffer(20000, num_eval_envs)
-    collector = ts.data.Collector(policy, env, buf, exploration_noise=True)
+    # record videos of environments
+    rec_env = gym.wrappers.RecordVideo(env, video_folder="videos/"+risk_measure+"/", name_prefix=risk_measure+"_", episode_trigger=lambda ep: True)
+    collector = ts.data.Collector(policy, rec_env, buf, exploration_noise=True)
     collector.reset()
     collect_stats = collector.collect(n_episode=num_eval_envs, render=1 / 200) # one episode per env
     env.close()
