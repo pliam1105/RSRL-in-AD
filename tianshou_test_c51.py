@@ -1,6 +1,3 @@
-""" code based on https://github.com/thu-ml/tianshou/blob/master/test/discrete/test_c51.py and
-    modified for my specific use-case
-"""
 import argparse
 import os
 import pickle
@@ -49,7 +46,7 @@ env_config = {
         # "actions_per_axis": 5 # change that for discretization accuracy
     },
     "lanes_count": 5, # change that for randomization, less chaos
-    "vehicles_count": 5, # default: 50 change that for more randomization and chaos
+    "vehicles_count": 20, # default: 50 change that for more randomization and chaos
     "duration": 40,  # [s] # default: 40, change the episode length in seconds, maybe bigger length for more risk-aversity
     "initial_spacing": 2,
     "collision_reward": -1,  # default: -1, the reward received when colliding with a vehicle, change it to value risk
@@ -71,31 +68,8 @@ def create_env(render_mode):
     env.configure(env_config)
     return env
 
-""" PARAMETERS """
-num_train_envs = 10 # change that for number of environments in parallel (although sequentially) in training
-#change min and max values for return range
-min_return = -100
-max_return = 100
-
-batch_size = 64
-training_num = 8
-
-eps_train = 0.25 #default: 0.1
-eps_test = 0 #default: 0.05
-eps_step_init = 10000
-eps_step_final = 50000
-
-reward_threshold = None
-
-if __name__ == "__main__":
-    env = create_env(None)
-    env.reset()
-    train_envs = DummyVectorEnv([lambda: create_env(None) for _ in range(num_train_envs)])
-    test_envs = DummyVectorEnv([lambda: create_env(None) for _ in range(10)])
-    print(env.observation_space, env.action_space)
-    print(env.observation_space.shape, env.action_space.shape or env.action_space.n)
-
-    class CNNnet(nn.Module):
+""" POLICY NETWORK """
+class CNNnet(nn.Module):
         def __init__(self, obs_space: gym.Space, action_shape, num_atoms):
             super().__init__()
             self.num_atoms = num_atoms
@@ -127,13 +101,30 @@ if __name__ == "__main__":
             logits = torch.softmax(logits, dim=-1)
             return logits, state
 
-    # net = Net(
-    #     state_shape = env.observation_space.shape,
-    #     action_shape = env.action_space.shape or env.action_space.n,
-    #     hidden_sizes=[128, 64, 32, 16], #default: [128,128,128,128]
-    #     softmax=True,
-    #     num_atoms=51
-    # )
+""" PARAMETERS """
+num_train_envs = 10 # change that for number of environments in parallel (although sequentially) in training
+#change min and max values for return range
+min_return = -100
+max_return = 100
+
+batch_size = 64
+training_num = 8
+
+eps_train = 0.25 #default: 0.1
+eps_test = 0 #default: 0.05
+eps_step_init = 10000
+eps_step_final = 50000
+
+reward_threshold = None
+
+if __name__ == "__main__":
+    env = create_env(None)
+    env.reset()
+    train_envs = DummyVectorEnv([lambda: create_env(None) for _ in range(num_train_envs)])
+    test_envs = DummyVectorEnv([lambda: create_env(None) for _ in range(10)])
+    print(env.observation_space, env.action_space)
+    print(env.observation_space.shape, env.action_space.shape or env.action_space.n)
+
     net = CNNnet(
         obs_space=env.observation_space,
         action_shape=env.action_space.shape or env.action_space.n,
@@ -155,12 +146,6 @@ if __name__ == "__main__":
 
     train_collector = Collector(policy, train_envs, VectorReplayBuffer(20000, num_train_envs), exploration_noise=True)
     test_collector = Collector(policy, test_envs, exploration_noise=True)
-
-    # train_collector.reset()
-    # train_collector.collect(n_step=batch_size*training_num)
-
-    # may need to change that based on that environment, if not set correctly or taking forever to complete
-    # reward_threshold = env.spec.reward_threshold
 
     #TensorBoard logging
     writer = SummaryWriter("log/C51")
@@ -189,11 +174,13 @@ if __name__ == "__main__":
         batch_size=batch_size,
         train_fn=train_fn,
         test_fn=lambda epoch, env_step: policy.set_eps(eps_test),
-        # stop_fn=lambda mean_rewards: mean_rewards >= reward_threshold
         logger=logger,
     )
 
+    # policy.load_state_dict(torch.load('C51.pth')) # to load existing policy
+
     for epoch_stat in trainer:
+        torch.save(policy.state_dict(), 'C51.pth') # to save the policy in a file
         print(epoch_stat)
         policy.eval()
         # policy.set_eps(eps_test)
@@ -201,7 +188,7 @@ if __name__ == "__main__":
         buf = VectorReplayBuffer(20000, num_train_envs)
         collector = ts.data.Collector(policy, env, buf, exploration_noise=True)
         collector.reset()
-        collector.collect(n_episode=10, render=1 / 200) #the policy seems to only choose actions 1-4 (or 5, that doesn't exist), so it may think it's not 0-4 but 1-5
+        collector.collect(n_episode=10, render=1 / 200)
         env.close()
         print(np.min(buf.act))
         print(np.max(buf.act))
